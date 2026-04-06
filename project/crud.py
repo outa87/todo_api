@@ -1,5 +1,5 @@
 import logging
-from project.models import Todo, User
+from models import Todo, User
 from passlib.context import CryptContext
 
 logger = logging.getLogger(__name__)
