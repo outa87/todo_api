@@ -1,7 +1,6 @@
 import logging
 from project.models import Todo, User
 from passlib.context import CryptContext
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
