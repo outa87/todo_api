@@ -40,7 +40,7 @@ def get_user_todos(db, user_id: int, done: bool = None, priority: int = None, so
 
     query = db.query(Todo).filter(Todo.user_id == user_id)
     if done is not None:
-        query = query.query.filter(Todo.done == done)
+        query = query.filter(Todo.done == done)
     if priority is not None:
         query = query.filter(Todo.priority == priority)
     if sort_by == "created":
