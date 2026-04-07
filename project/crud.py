@@ -1,9 +1,9 @@
 import logging
 from models import Todo, User
 from passlib.context import CryptContext
+from sqlalchemy.exc import SQLALchemyError
 
 logger = logging.getLogger(__name__)
-
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def hash_password(password: str):
@@ -15,11 +15,16 @@ def verify_password(plain, hashed):
 def create_user(db, username: str, password: str):
     hashed_pw = hash_password(password)
     user = User(username=username, hashed_password=hashed_pw)
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    logger.info(f"[create_user] Created user id={user.id}, username='{user.username}'")
-    return user
+    try:
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        logger.info(f"[create_user] Created user id={user.id}, username='{user.username}'")
+        return user
+    except SQLALchemyError as e:
+        db.rollaback()
+        logger.error(f"[crate_user] Failed to create user: {e}")
+        raise
 
 def get_user_by_username(db, username: str):
     return db.query(User).filter(User.username == username).first()
@@ -28,11 +33,16 @@ def add_todo(db, task: str, user_id: int, due_date=None, priority=1):
     logger.info(f"[add_todo] start task='{task}', user_id={user_id}")
 
     new_todo = Todo(task=task, done=False, user_id=user_id, due_date=due_date,priority=priority)
-    db.add(new_todo)
-    db.commit()
-    db.refresh(new_todo)  
-    logger.info(f"[add_todo] success id={new_todo.id}")     
-    return new_todo
+    try:
+        db.add(new_todo)
+        db.commit()
+        db.refresh(new_todo)
+        logger.info(f"[add_todo] success id={new_todo.id}")
+        return new_todo
+    except SQLALchemyError as e:
+        db.rollaback()
+        logger.error(f"[add_todo] failed: {e}")
+        raise
 
 def get_user_todos(db, user_id: int, done: bool = None, priority: int = None, sort_by: str = None, 
                    skip: int = 0, limit: int = 10):
@@ -62,9 +72,14 @@ def update_todo(db, todo_id: int, user_id: int, done: bool):
         return None
     old_done = todo.done
     todo.done = done
-    db.commit() 
-    logger.info(f"[update_todo] success id={todo_id}, {old_done} -> {done}")       
-    return todo
+    try:
+        db.commit()
+        logger.info(f"[update_todo] success id={todo_id}, {old_done} -> {done}")
+        return todo
+    except SQLALchemyError as e:
+        db.rollaback()
+        logger.error(f"[update_todo] failed id={todo_id}: {e}")
+        raise
             
 def delete_todo(db, todo_id: int, user_id: int):
     logger.info(f"[delete_todo] start id={todo_id}, user_id={user_id}")
@@ -73,7 +88,12 @@ def delete_todo(db, todo_id: int, user_id: int):
     if not todo:     
         logger.warning(f"[delete_todo] not found or unauthorized id={todo_id}")       
         return None
-    db.delete(todo)
-    db.commit()
-    logger.info(f"[delete_todo] success id={todo_id}")
-    return todo
+    try:
+        db.delete(todo)
+        db.commit()
+        logger.info(f"[delete_todo] success id={todo_id}")
+        return todo
+    except SQLALchemyError as e:
+        db.rollaback()
+        logger.error(f"[delete_todo] failed id={todo_id}: {e}")
+        raise
