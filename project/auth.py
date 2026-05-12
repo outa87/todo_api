@@ -2,13 +2,13 @@ from datetime import datetime, timedelta
 from jose import jwt, JWTError
 import os
 import logging
-from dotenv import load_dotenvpy
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
-load_dotenvpy()
+load_dotenv(dotenv_path="project/.env")
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
-    raise ValueError("SECTRET_KEY is not set")
+    raise ValueError("SECRET_KEY is not set")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 

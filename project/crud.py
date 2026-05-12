@@ -1,16 +1,18 @@
 import logging
-from models import Todo, User
+from .models import Todo, User
 from passlib.context import CryptContext
-from sqlalchemy.exc import SQLALchemyError
+from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def hash_password(password: str):
-    return pwd_context.hash(password)
+    pw_bytes = password.encode("utf-8")[:72]
+    return pwd_context.hash(pw_bytes)
 
-def verify_password(plain, hashed):
-    return pwd_context.verify(plain, hashed)
+def verify_password(plain: str, hashed: str):
+    pw_bytes = plain.encode("utf-8")[:72]
+    return pwd_context.verify(pw_bytes, hashed)
 
 def create_user(db, username: str, password: str):
     hashed_pw = hash_password(password)
@@ -21,9 +23,9 @@ def create_user(db, username: str, password: str):
         db.refresh(user)
         logger.info(f"[create_user] Created user id={user.id}, username='{user.username}'")
         return user
-    except SQLALchemyError as e:
-        db.rollaback()
-        logger.error(f"[crate_user] Failed to create user: {e}")
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"[create_user] Failed to create user: {e}")
         raise
 
 def get_user_by_username(db, username: str):
@@ -39,8 +41,8 @@ def add_todo(db, task: str, user_id: int, due_date=None, priority=1):
         db.refresh(new_todo)
         logger.info(f"[add_todo] success id={new_todo.id}")
         return new_todo
-    except SQLALchemyError as e:
-        db.rollaback()
+    except SQLAlchemyError as e:
+        db.rollback()
         logger.error(f"[add_todo] failed: {e}")
         raise
 
@@ -76,8 +78,8 @@ def update_todo(db, todo_id: int, user_id: int, done: bool):
         db.commit()
         logger.info(f"[update_todo] success id={todo_id}, {old_done} -> {done}")
         return todo
-    except SQLALchemyError as e:
-        db.rollaback()
+    except SQLAlchemyError as e:
+        db.rollback()
         logger.error(f"[update_todo] failed id={todo_id}: {e}")
         raise
             
@@ -93,7 +95,7 @@ def delete_todo(db, todo_id: int, user_id: int):
         db.commit()
         logger.info(f"[delete_todo] success id={todo_id}")
         return todo
-    except SQLALchemyError as e:
-        db.rollaback()
+    except SQLAlchemyError as e:
+        db.rollback()
         logger.error(f"[delete_todo] failed id={todo_id}: {e}")
         raise

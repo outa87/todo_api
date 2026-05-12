@@ -1,11 +1,14 @@
 from fastapi.testclient import TestClient
-from project.main import app
+from .main import app
 import uuid
+from .database import init_db
+
+init_db()
 
 client = TestClient(app)
 
 def get_token():
-    username = f"user_{uuid.uuid4()}"
+    username = f"user_{uuid.uuid4().hex[:8]}"
     client.post("/register", json={"username": username, "password": "testpass"})
     res = client.post("/login", json={"username": username, "password": "testpass"})
     return res.json()["access_token"]
@@ -21,8 +24,8 @@ def test_create_todo():
 
 def test_get_todos_filter():
     token = get_token()
-    client.post("/todo", json={"task": "A", "priority": 1}, headers={"Authorization": f"Bearer {token}"})
-    client.post("/todo", json={"task": "B", "priority": 3}, headers={"Authorization": f"Bearer {token}"})
+    client.post("/todos", json={"task": "A", "priority": 1}, headers={"Authorization": f"Bearer {token}"})
+    client.post("/todos", json={"task": "B", "priority": 3}, headers={"Authorization": f"Bearer {token}"})
 
     response = client.get("/todos?priority=3", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
@@ -32,8 +35,8 @@ def test_get_todos_filter():
 
 def test_sort_todos():
     token = get_token()
-    client.post("/todo", json={"task": "A"}, headers={"Authorization": f"Bearer {token}"})
-    client.post("/todo", json={"task": "B"}, headers={"Authorization": f"Bearer {token}"})
+    client.post("/todos", json={"task": "A"}, headers={"Authorization": f"Bearer {token}"})
+    client.post("/todos", json={"task": "B"}, headers={"Authorization": f"Bearer {token}"})
     
     response = client.get("/todos?sort_by=created", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200

@@ -2,10 +2,10 @@ from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from auth import create_access_token, verify_token
-from database import init_db, get_db
-from models import TodoCreate, TodoResponse, UserCreate, UserResponse
-from crud import (add_todo, get_user_todos, update_todo, delete_todo, 
+from .auth import create_access_token, verify_token
+from .database import init_db, get_db
+from .models import TodoCreate, TodoResponse, UserCreate, UserResponse
+from .crud import (add_todo, get_user_todos, update_todo, delete_todo, 
 create_user, get_user_by_username, verify_password)
 import logging
 
