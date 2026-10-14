@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Todo App</title>
+</head>
+
+<body>
+
+<h1>Todo App</h1>
+
+<!-- ==================== -->
+<!-- 新規登録 -->
+<!-- ==================== -->
+
+<h2>新規登録</h2>
+
+<input id="register-username" placeholder="username">
+<input id="register-password" type="password" placeholder="password">
+
+<button onclick="register()">登録</button>
+
+
+<hr>
+
+
+<!-- ==================== -->
+<!-- ログイン -->
+<!-- ==================== -->
+
+<h2>ログイン</h2>
+
+<input id="username" placeholder="username">
+<input id="password" type="password" placeholder="password">
+
+<button onclick="login()">ログイン</button>
+
+
+<hr>
+
+
+<!-- ==================== -->
+<!-- Todo追加 -->
+<!-- ==================== -->
+
+<h2>Todo追加</h2>
+
+<input id="task" placeholder="task">
+
+<input id="due-date" type="datetime-local">
+
+<input id="priority" type="number" min="1" max="3" placeholder="priority">
+
+<button onclick="addTodo()">追加</button>
+
+
+<hr>
+
+
+<!-- ==================== -->
+<!-- Todo一覧・操作 -->
+<!-- ==================== -->
+
+<h2>Todo一覧</h2>
+
+
+<!-- 絞り込み -->
+
+<h3>絞り込み</h3>
+
+<label for="done-filter">状態：</label>
+
+<select id="done-filter">
+    <option value="">すべて</option>
+    <option value="false">未完了</option>
+    <option value="true">完了</option>
+</select>
+
+
+<label for="priority-filter">優先度：</label>
+
+<select id="priority-filter">
+    <option value="">すべて</option>
+    <option value="1">1</option>
+    <option value="2">2</option>
+    <option value="3">3</option>
+</select>
+
+
+<!-- 並び替え -->
+
+<label for="sort-by">並び順：</label>
+
+<select id="sort-by">
+    <option value="">指定なし</option>
+    <option value="created">作成日時</option>
+    <option value="due">期限</option>
+</select>
+
+<button onclick="resetPageAndGetTodos()">更新</button>
+
+
+<hr>
+
+
+<!-- Todo表示 -->
+
+<ul id="todo-list"></ul>
+
+
+<!-- ==================== -->
+<!-- ページネーション -->
+<!-- ==================== -->
+
+<div>
+
+    <button onclick="previousPage()">← 前へ</button>
+
+    <span id="page-number">1</span>
+
+    <button onclick="nextPage()">次へ →</button>
+
+</div>
+
+
+<!-- JavaScript -->
+
+<script src="app.js"></script>
+
+</body>
+</html>
