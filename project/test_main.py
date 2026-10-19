@@ -1,364 +1,269 @@
-from fastapi.testclient import TestClient
+import random
 import uuid
 from datetime import datetime, timedelta, timezone
-from .main import app
-from .database import init_db, SessionLocal
-from .models import Todo
-from .auth import SECRET_KEY, ALGORITHM
+
+import pytest
+from fastapi.testclient import TestClient
 from jose import jwt
 
-
-
-
-# ====================
-# DB初期化
-# ====================
-
-init_db()
-
-
-# ====================
-# TestClient
-# ====================
+from .auth import ALGORITHM, SECRET_KEY
+from .database import SessionLocal, init_db
+from .main import app
+from .models import Todo
 
 client = TestClient(app)
 
+PASSWORD = "testpass"
+
 
 # ====================
-# テスト用ユーザーを作成して
-# JWTトークンを取得する
+# フィクスチャ
 # ====================
 
-def get_token():
-
-    username = f"user_{uuid.uuid4().hex[:8]}"
-
-    response = client.post(
-        "/register",
-        json={
-            "username": username,
-            "password": "testpass"
-        }
-    )
-
-    assert response.status_code == 201
+@pytest.fixture(scope="session", autouse=True)
+def _init_db():
+    init_db()
 
 
-    response = client.post(
-        "/login",
-        json={
-            "username": username,
-            "password": "testpass"
-        }
-    )
+@pytest.fixture
+def headers():
+    """テストごとに新規ユーザーを作り、認証ヘッダーを返す"""
+    return make_auth_headers()
 
+
+@pytest.fixture
+def other_headers():
+    """別ユーザーの認証ヘッダー"""
+    return make_auth_headers()
+
+
+# ====================
+# ヘルパー
+# ====================
+
+def unique_username():
+    return f"user_{uuid.uuid4().hex[:8]}"
+
+
+def username_of_length(length):
+    """指定した文字数で、重複しにくいユーザー名を作る
+
+    todo.db が残るので、短い名前を英数字で作ると過去の実行と衝突しうる。
+    衝突しにくい漢字で作る（文字数は len() で数えるので境界値テストに使える）。
+    """
+    return "".join(chr(random.randint(0x4E00, 0x9FA5)) for _ in range(length))
+
+
+def register(username, password=PASSWORD):
+    return client.post("/register", json={"username": username, "password": password})
+
+
+def login(username, password=PASSWORD):
+    return client.post("/login", json={"username": username, "password": password})
+
+
+def bearer(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def make_auth_headers():
+    username = unique_username()
+    assert register(username).status_code == 201
+
+    response = login(username)
     assert response.status_code == 200
 
+    return bearer(response.json()["access_token"])
 
-    return response.json()["access_token"]
+
+def make_jwt(payload, key=SECRET_KEY):
+    return jwt.encode(payload, key, algorithm=ALGORITHM)
+
+
+def create_todo(headers, task="task", **fields):
+    """Todoを作成してレスポンスJSONを返す（201は常に検証する）"""
+    response = client.post(
+        "/todos",
+        json={"task": task, **fields},
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def create_done_todo(headers, task="done"):
+    """完了済みのTodoを作る（doneがTrueになったことも検証する）"""
+    todo = create_todo(headers, task)
+
+    response = set_done(headers, todo["id"], True)
+    assert response.status_code == 200
+    assert response.json()["done"] is True
+
+    return todo
+
+
+def set_done(headers, todo_id, done):
+    """doneを更新してレスポンスを返す（404テストでも使うので検証しない）"""
+    return client.patch(
+        f"/todos/{todo_id}?done={'true' if done else 'false'}",
+        headers=headers,
+    )
+
+
+def get_todos(headers, query=""):
+    return client.get(f"/todos{query}", headers=headers)
 
 
 # ====================
-# Authorizationヘッダー
-# ====================
-
-def auth_header(token):
-
-    return {
-        "Authorization": f"Bearer {token}"
-    }
-
-
-# ====================
-# 登録テスト
+# 登録
 # ====================
 
 def test_register():
+    username = unique_username()
 
-    username = f"user_{uuid.uuid4().hex[:8]}"
-
-    response = client.post(
-        "/register",
-        json={
-            "username": username,
-            "password": "testpass"
-        }
-    )
-
-    assert response.status_code == 201
-
-    data = response.json()
-
-    assert data["username"] == username
-
-
-# ====================
-# 重複ユーザー登録テスト
-# ====================
-
-def test_register_duplicate():
-
-    username = f"user_{uuid.uuid4().hex[:8]}"
-
-    response = client.post(
-        "/register",
-        json={
-            "username": username,
-            "password": "testpass"
-        }
-    )
-
-    assert response.status_code == 201
-
-
-    response = client.post(
-        "/register",
-        json={
-            "username": username,
-            "password": "testpass"
-        }
-    )
-
-    assert response.status_code == 400
-
-
-# ====================
-# username入力バリデーションテスト
-# ====================
-
-def test_register_username_too_short():
-    response = client.post(
-        "/register",
-        json={
-            "username": "ab",
-            "password": "testpass"
-        }
-    )
-
-    assert response.status_code == 422
-
-
-def test_register_username_too_long():
-    response = client.post(
-        "/register",
-        json={
-            "username": "a" * 31,
-            "password": "testpass"
-        }
-    )
-
-    assert response.status_code == 422
-
-
-def test_register_username_whitespace_only():
-    response = client.post(
-        "/register",
-        json={
-            "username": "   ",
-            "password": "testpass"
-        }
-    )
-
-    assert response.status_code == 422
-
-
-def test_register_username_max_length():
-    username = "a" * 26 + uuid.uuid4().hex[:4]
-
-    response = client.post(
-        "/register",
-        json={
-            "username": username,
-            "password": "testpass"
-        }
-    )
+    response = register(username)
 
     assert response.status_code == 201
     assert response.json()["username"] == username
 
 
+def test_register_duplicate():
+    username = unique_username()
+
+    assert register(username).status_code == 201
+    assert register(username).status_code == 400
+
+
+def test_register_username_is_stripped():
+    username = unique_username()
+
+    response = register(f"  {username}  ")
+
+    assert response.status_code == 201
+    assert response.json()["username"] == username
+
+
+@pytest.mark.parametrize("length", [3, 30], ids=["min_3", "max_30"])
+def test_register_valid_username_length(length):
+    username = username_of_length(length)
+
+    response = register(username)
+
+    assert response.status_code == 201
+    assert response.json()["username"] == username
+
+
+@pytest.mark.parametrize(
+    "username",
+    ["ab", "a" * 31, "   ", "  ab  "],
+    ids=["2_chars", "31_chars", "whitespace", "2_chars_after_strip"],
+)
+def test_register_invalid_username(username):
+    assert register(username).status_code == 422
+
+
+@pytest.mark.parametrize(
+    "password",
+    ["a" * 8, "a" * 72, "あ" * 24],
+    ids=["min_8_chars", "max_72_bytes_ascii", "max_72_bytes_utf8"],
+)
+def test_register_valid_password_length(password):
+    # "あ" は UTF-8 で3バイト → 24文字でちょうど72バイト
+    assert register(unique_username(), password).status_code == 201
+
+
+@pytest.mark.parametrize(
+    "password",
+    ["a" * 7, "        ", "a" * 73, "あ" * 24 + "a"],
+    ids=["7_chars", "whitespace", "73_chars", "73_bytes_utf8"],
+)
+def test_register_invalid_password(password):
+    assert register(unique_username(), password).status_code == 422
+
+
 # ====================
-# password入力バリデーションテスト
-# ====================
-
-def test_register_password_too_short():
-    response = client.post(
-        "/register",
-        json={
-            "username": f"user_{uuid.uuid4().hex[:8]}",
-            "password": "abc123"
-        }
-    )
-
-    assert response.status_code == 422
-
-
-def test_register_password_whitespace_only():
-    response = client.post(
-        "/register",
-        json={
-            "username": f"user_{uuid.uuid4().hex[:8]}",
-            "password": "        "
-        }
-    )
-
-    assert response.status_code == 422
-
-
-def test_register_password_too_many_utf8_bytes():
-    response = client.post(
-        "/register",
-        json={
-            "username": f"user_{uuid.uuid4().hex[:8]}",
-            "password": "あ" * 25
-        }
-    )
-
-    assert response.status_code == 422
-
-
-# ====================
-# ログイン成功テスト
+# ログイン
 # ====================
 
 def test_login():
+    username = unique_username()
+    assert register(username).status_code == 201
 
-    username = f"user_{uuid.uuid4().hex[:8]}"
-
-    client.post(
-        "/register",
-        json={
-            "username": username,
-            "password": "testpass"
-        }
-    )
-
-
-    response = client.post(
-        "/login",
-        json={
-            "username": username,
-            "password": "testpass"
-        }
-    )
+    response = login(username)
 
     assert response.status_code == 200
-
     data = response.json()
-
     assert "access_token" in data
     assert data["token_type"] == "bearer"
 
 
-# ====================
-# ログイン失敗テスト
-# ====================
-
 def test_login_invalid_password():
+    username = unique_username()
+    assert register(username).status_code == 201
 
-    username = f"user_{uuid.uuid4().hex[:8]}"
-
-    client.post(
-        "/register",
-        json={
-            "username": username,
-            "password": "testpass"
-        }
-    )
+    assert login(username, "wrongpassword").status_code == 401
 
 
-    response = client.post(
-        "/login",
-        json={
-            "username": username,
-            "password": "wrongpassword"
-        }
-    )
+def test_login_unknown_user():
+    assert login(unique_username()).status_code == 401
+
+
+# ====================
+# 認証（JWT）
+# ====================
+
+@pytest.mark.parametrize(
+    "method, path, body",
+    [
+        ("post", "/todos", {"task": "認証なし"}),
+        ("get", "/todos", None),
+        ("patch", "/todos/1?done=true", None),
+        ("delete", "/todos/1", None),
+    ],
+    ids=["post_todos", "get_todos", "patch_todo", "delete_todo"],
+)
+def test_endpoints_require_token(method, path, body):
+    response = client.request(method, path, json=body)
 
     assert response.status_code == 401
 
 
-# ====================
-# 認証なしでTodo作成
-# ====================
-
-def test_create_todo_without_token():
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "認証なしテスト"
-        }
-    )
-
-    assert response.status_code == 401
-
-
-# ====================
-# 不正なJWTトークンのテスト
-# ====================
-
-def test_create_todo_with_invalid_token():
-    response = client.post(
-        "/todos",
-        json={"task": "不正トークンテスト"},
-        headers=auth_header("invalid.token.value")
-    )
-
-    assert response.status_code == 401
-
-
-def test_get_todos_with_invalid_token():
-    response = client.get(
-        "/todos",
-        headers=auth_header("invalid.token.value")
-    )
-
-    assert response.status_code == 401
-
-
-def test_create_todo_with_expired_token():
-    expired_time = datetime.now(timezone.utc) - timedelta(minutes=1)
-
-    token = jwt.encode(
-        {
-            "user_id": 1,
-            "exp": expired_time,
-        },
-        SECRET_KEY,
-        algorithm=ALGORITHM,
-    )
-
-    response = client.post(
-        "/todos",
-        json={"task": "期限切れトークンテスト"},
-        headers=auth_header(token),
-    )
-
-    assert response.status_code == 401
+@pytest.mark.parametrize(
+    "token",
+    [
+        pytest.param("invalid.token.value", id="malformed"),
+        pytest.param(
+            make_jwt({
+                "user_id": 1,
+                "exp": datetime.now(timezone.utc) - timedelta(minutes=1),
+            }),
+            id="expired",
+        ),
+        pytest.param(
+            make_jwt(
+                {"user_id": 1, "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
+                key="wrong-secret-key-wrong-secret-key",
+            ),
+            id="wrong_key",
+        ),
+        pytest.param(
+            make_jwt({"exp": datetime.now(timezone.utc) + timedelta(hours=1)}),
+            id="no_user_id",
+        ),
+    ],
+)
+def test_bad_token_is_rejected(token):
+    # 認証は全エンドポイント共通の依存関係なので、GET /todos で代表して確認する
+    # （各エンドポイントが認証を要求することは test_endpoints_require_token で確認）
+    assert get_todos(bearer(token)).status_code == 401
 
 
 # ====================
-# Todo作成テスト
+# Todo作成
 # ====================
 
-def test_create_todo():
-
-    token = get_token()
-
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "テストタスク"
-        },
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 201
-
-
-    data = response.json()
+def test_create_todo(headers):
+    data = create_todo(headers, "テストタスク")
 
     assert data["task"] == "テストタスク"
     assert data["done"] is False
@@ -366,1078 +271,301 @@ def test_create_todo():
     assert data["due_date"] is None
 
 
-# ====================
-# task入力バリデーションテスト
-# ====================
+def test_create_todo_with_due_date(headers):
+    data = create_todo(headers, "期限あり", due_date="2030-01-01T10:00:00")
 
-def test_create_todo_empty_task():
-    token = get_token()
-
-    response = client.post(
-        "/todos",
-        json={"task": ""},
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 422
+    assert data["due_date"].startswith("2030-01-01T10:00:00")
 
 
-def test_create_todo_whitespace_only_task():
-    token = get_token()
+def test_create_todo_task_is_stripped(headers):
+    assert create_todo(headers, "  trim  ")["task"] == "trim"
 
-    response = client.post(
-        "/todos",
-        json={"task": "   "},
-        headers=auth_header(token)
-    )
+
+@pytest.mark.parametrize("length", [1, 200], ids=["min_1", "max_200"])
+def test_create_todo_valid_task_length(headers, length):
+    task = "a" * length
+
+    assert create_todo(headers, task)["task"] == task
+
+
+@pytest.mark.parametrize("task", ["", "   ", "a" * 201], ids=["empty", "whitespace", "too_long"])
+def test_create_todo_invalid_task(headers, task):
+    response = client.post("/todos", json={"task": task}, headers=headers)
 
     assert response.status_code == 422
 
 
-def test_create_todo_task_too_long():
-    token = get_token()
+@pytest.mark.parametrize("priority", [1, 2, 3])
+def test_create_todo_valid_priority(headers, priority):
+    assert create_todo(headers, f"priority {priority}", priority=priority)["priority"] == priority
 
+
+@pytest.mark.parametrize("priority", [0, 4])
+def test_create_todo_invalid_priority(headers, priority):
     response = client.post(
         "/todos",
-        json={"task": "a" * 201},
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 422
-
-
-def test_create_todo_task_max_length():
-    token = get_token()
-
-    response = client.post(
-        "/todos",
-        json={"task": "a" * 200},
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 201
-    assert response.json()["task"] == "a" * 200
-
-
-# ====================
-# priority 1 テスト
-# ====================
-
-def test_create_todo_priority_1():
-
-    token = get_token()
-
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "priority 1",
-            "priority": 1
-        },
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 201
-
-    assert response.json()["priority"] == 1
-
-
-# ====================
-# priority 2 テスト
-# ====================
-
-def test_create_todo_priority_2():
-
-    token = get_token()
-
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "priority 2",
-            "priority": 2
-        },
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 201
-
-    assert response.json()["priority"] == 2
-
-
-# ====================
-# priority 3 テスト
-# ====================
-
-def test_create_todo_priority_3():
-
-    token = get_token()
-
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "priority 3",
-            "priority": 3
-        },
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 201
-
-    assert response.json()["priority"] == 3
-
-
-# ====================
-# priority 0 拒否テスト
-# ====================
-
-def test_create_todo_priority_too_low():
-
-    token = get_token()
-
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "priority 0",
-            "priority": 0
-        },
-        headers=auth_header(token)
+        json={"task": f"priority {priority}", "priority": priority},
+        headers=headers,
     )
 
     assert response.status_code == 422
 
 
 # ====================
-# priority 4 拒否テスト
+# Todo取得・フィルター
 # ====================
 
-def test_create_todo_priority_too_high():
+def test_get_todos(headers):
+    create_todo(headers, "A")
 
-    token = get_token()
-
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "priority 4",
-            "priority": 4
-        },
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 422
-
-
-# ====================
-# priority 999 拒否テスト
-# ====================
-
-def test_create_todo_priority_999():
-
-    token = get_token()
-
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "priority 999",
-            "priority": 999
-        },
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 422
-
-
-# ====================
-# Todo取得テスト
-# ====================
-
-def test_get_todos():
-
-    token = get_token()
-
-
-    client.post(
-        "/todos",
-        json={
-            "task": "A"
-        },
-        headers=auth_header(token)
-    )
-
-
-    response = client.get(
-        "/todos",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 200
-
-    data = response.json()
-
-    assert isinstance(data, list)
-
-
-# ====================
-# priorityフィルターテスト
-# ====================
-
-def test_get_todos_filter():
-
-    token = get_token()
-
-
-    client.post(
-        "/todos",
-        json={
-            "task": "A",
-            "priority": 1
-        },
-        headers=auth_header(token)
-    )
-
-
-    client.post(
-        "/todos",
-        json={
-            "task": "B",
-            "priority": 3
-        },
-        headers=auth_header(token)
-    )
-
-
-    response = client.get(
-        "/todos?priority=3",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 200
-
-
-    data = response.json()
-
-    assert len(data) >= 1
-
-    assert all(
-        todo["priority"] == 3
-        for todo in data
-    )
-
-
-# ====================
-# doneフィルターテスト
-# ====================
-
-def test_get_todos_done_filter():
-
-    token = get_token()
-
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "完了テスト"
-        },
-        headers=auth_header(token)
-    )
-
-    todo_id = response.json()["id"]
-
-
-    client.patch(
-        f"/todos/{todo_id}?done=true",
-        headers=auth_header(token)
-    )
-
-
-    response = client.get(
-        "/todos?done=true",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 200
-
-
-    data = response.json()
-
-    assert len(data) >= 1
-
-    assert all(
-        todo["done"] is True
-        for todo in data
-    )
-
-
-# ====================
-# limitフィルターテスト
-# ====================
-
-def test_get_todos_limit_max():
-    token = get_token()
-
-    for i in range(100):
-        response = client.post(
-            "/todos",
-            json={
-                "task": f"limit{i}"
-            },
-            headers=auth_header(token)
-        )
-
-        assert response.status_code == 201
-
-    response = client.get(
-        "/todos?limit=1",
-        headers=auth_header(token)
-    )
+    response = get_todos(headers)
 
     assert response.status_code == 200
     assert len(response.json()) == 1
 
-    response = client.get(
-        "/todos?limit=100",
-        headers=auth_header(token)
-    )
+
+def test_get_todos_default_order_is_id_asc(headers):
+    ids = [create_todo(headers, f"task{i}")["id"] for i in range(5)]
+
+    response = get_todos(headers)
 
     assert response.status_code == 200
-    assert len(response.json()) == 100
+    assert [t["id"] for t in response.json()] == ids
+
+
+@pytest.mark.parametrize("priority", [1, 2, 3])
+def test_get_todos_priority_filter(headers, priority):
+    for p in (1, 2, 3):
+        create_todo(headers, f"priority {p}", priority=p)
+
+    response = get_todos(headers, f"?priority={priority}")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["priority"] == priority
+
+
+def test_get_todos_done_filter(headers):
+    create_done_todo(headers, "完了")
+    create_todo(headers, "未完了")
+
+    response = get_todos(headers, "?done=true")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["done"] is True
+
+
+def test_get_todos_limit(headers):
+    for i in range(100):
+        create_todo(headers, f"limit{i}")
+
+    # 100件作るのが重いので、parametrizeにせず1テストの中で両方確認する
+    for limit in (1, 100):
+        response = get_todos(headers, f"?limit={limit}")
+
+        assert response.status_code == 200
+        assert len(response.json()) == limit
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "?priority=0",
+        "?priority=4",
+        "?skip=-1",
+        "?limit=0",
+        "?limit=101",
+        "?sort_by=invalid",
+    ],
+)
+def test_get_todos_invalid_query(headers, query):
+    assert get_todos(headers, query).status_code == 422
 
 
 # ====================
-# priorityクエリパラメータ制限テスト
+# ソート
 # ====================
 
-def test_get_todos_priority_too_low():
-    token = get_token()
-
-    response = client.get(
-        "/todos?priority=0",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 422
-
-
-def test_get_todos_priority_too_high():
-    token = get_token()
-
-    response = client.get(
-        "/todos?priority=4",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 422
-
-
-# ====================
-# skip制限テスト
-# ====================
-
-def test_get_todos_skip_negative():
-    token = get_token()
-
-    response = client.get(
-        "/todos?skip=-1",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 422
-
-
-# ====================
-# limit制限テスト
-# ====================
-
-def test_get_todos_limit_too_low():
-    token = get_token()
-
-    response = client.get(
-        "/todos?limit=0",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 422
-
-
-def test_get_todos_limit_too_high():
-    token = get_token()
-
-    response = client.get(
-        "/todos?limit=101",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 422
-
-
-# ====================
-# 作成日時ソートテスト
-# ====================
-
-def test_sort_todos():
-
-    token = get_token()
-
-
-    res1 =client.post(
-        "/todos",
-        json={
-            "task": "A"
-        },
-        headers=auth_header(token)
-    )
-
-
-    res2 =client.post(
-        "/todos",
-        json={
-            "task": "B"
-        },
-        headers=auth_header(token)
-    )
-
-    assert res1.status_code == 201
-    assert res2.status_code == 201
-
-    todo1_id = res1.json()["id"]
-    todo2_id = res2.json()["id"]
-
-    same_time = datetime(2030, 1, 1, 12, 0, 0)
+def test_sort_todos_by_created(headers):
+    """作成日時が同じ場合はIDの小さい順になる"""
+    ids = [create_todo(headers, "A")["id"], create_todo(headers, "B")["id"]]
 
     db = SessionLocal()
-
     try:
-        db.query(Todo).filter(Todo.id.in_([todo1_id, todo2_id])).update(
-            {Todo.created_at: same_time}, synchronize_session=False)
-
+        db.query(Todo).filter(Todo.id.in_(ids)).update(
+            {Todo.created_at: datetime(2030, 1, 1, 12, 0, 0)},
+            synchronize_session=False,
+        )
         db.commit()
-
     finally:
         db.close()
-        
 
-    response = client.get(
-        "/todos?sort_by=created",
-        headers=auth_header(token)
-    )
+    response = get_todos(headers, "?sort_by=created")
 
     assert response.status_code == 200
-
-    data = response.json()
-
-    assert len(data) == 2
-
-    assert [todo["id"] for todo in data] == sorted([todo1_id, todo2_id])
+    assert [t["id"] for t in response.json()] == sorted(ids)
 
 
-# ====================
-# 期限ソートテスト
-# ====================
+def test_sort_todos_by_due_date(headers):
+    create_todo(headers, "A", due_date="2030-01-02T10:00:00")
+    create_todo(headers, "B", due_date="2030-01-01T10:00:00")
 
-def test_sort_todos_by_due_date():
-
-    token = get_token()
-
-
-    res1 =client.post(
-        "/todos",
-        json={
-            "task": "A",
-            "due_date": "2030-01-02T10:00:00",
-        },
-        headers=auth_header(token)
-    )
-
-
-    res2 = client.post(
-        "/todos",
-        json={
-            "task": "B",
-            "due_date": "2030-01-01T10:00:00",
-        },
-        headers=auth_header(token)
-    )
-
-    assert res1.status_code == 201
-    assert res2.status_code == 201
-
-
-    response = client.get(
-        "/todos?sort_by=due",
-        headers=auth_header(token)
-    )
+    response = get_todos(headers, "?sort_by=due")
 
     assert response.status_code == 200
-
-    data = response.json()
-
-    assert len(data) == 2
-
-    assert data[0]["task"] == "B"
-    assert data[1]["task"] == "A"
+    assert [t["task"] for t in response.json()] == ["B", "A"]
 
 
-# ====================
-# 期限未設定のTodoを最後にするテスト
-# ====================
+def test_sort_todos_due_date_none_last(headers):
+    create_todo(headers, "期限が遅い", due_date="2030-01-03T10:00:00")
+    create_todo(headers, "期限なし")
+    create_todo(headers, "期限が早い", due_date="2030-01-01T10:00:00")
 
-def test_sort_todos_due_date_none_last():
-
-    token = get_token()
-
-    
-    res1 = client.post(
-        "/todos",
-        json={
-            "task": "期限が遅い",
-            "due_date": "2030-01-03T10:00:00"
-        },
-        headers=auth_header(token)
-    )
-
-    
-    res2 = client.post(
-        "/todos",
-        json={
-            "task": "期限なし"
-        },
-        headers=auth_header(token)
-    )
-
-    
-    res3 = client.post(
-        "/todos",
-        json={
-            "task": "期限が早い",
-            "due_date": "2030-01-01T10:00:00"
-        },
-        headers=auth_header(token)
-    )
-
-    assert res1.status_code == 201
-    assert res2.status_code == 201
-    assert res3.status_code == 201
-
-    response = client.get(
-        "/todos?sort_by=due",
-        headers=auth_header(token)
-    )
+    response = get_todos(headers, "?sort_by=due")
 
     assert response.status_code == 200
+    assert [t["task"] for t in response.json()] == ["期限が早い", "期限が遅い", "期限なし"]
 
-    data = response.json()
 
-    assert [
-        todo["task"] for todo in data
-    ] == [
-        "期限が早い",
-        "期限が遅い",
-        "期限なし"
+def test_sort_todos_same_due_date_by_id(headers):
+    due = "2030-01-01T10:00:00"
+    ids = [
+        create_todo(headers, "同じ期限A", due_date=due)["id"],
+        create_todo(headers, "同じ期限B", due_date=due)["id"],
     ]
 
-
-# ====================
-# 同じ期限ならIDの小さい順にするテスト
-# ====================
-
-def test_sort_todos_same_due_date_by_id():
-
-    token = get_token()
-
-    same_due_date = "2030-01-01T10:00:00"
-
-    res1 = client.post(
-        "/todos",
-        json={
-            "task": "同じ期限A",
-            "due_date": same_due_date
-        },
-        headers=auth_header(token)
-    )
-
-    res2 = client.post(
-        "/todos",
-        json={
-            "task": "同じ期限B",
-            "due_date": same_due_date
-        },
-        headers=auth_header(token)
-    )
-
-    assert res1.status_code == 201
-    assert res2.status_code == 201
-
-    todo1_id = res1.json()["id"]
-    todo2_id = res2.json()["id"]
-
-    response = client.get(
-        "/todos?sort_by=due",
-        headers=auth_header(token)
-    )
+    response = get_todos(headers, "?sort_by=due")
 
     assert response.status_code == 200
+    assert [t["id"] for t in response.json()] == sorted(ids)
 
+
+# ====================
+# ページネーション
+# ====================
+
+@pytest.mark.parametrize(
+    "skip, limit, expected_len",
+    [
+        (0, 10, 10),
+        (10, 10, 5),
+        (15, 10, 0),
+    ],
+    ids=["first_page", "second_page_partial", "empty_page"],
+)
+def test_pagination(headers, skip, limit, expected_len):
+    for i in range(15):
+        create_todo(headers, f"task{i}")
+
+    response = get_todos(headers, f"?skip={skip}&limit={limit}")
+
+    assert response.status_code == 200
+    assert len(response.json()) == expected_len
+
+
+@pytest.mark.parametrize("skip, expected_len", [(0, 10), (10, 2)], ids=["first_page", "last_page"])
+def test_done_filter_with_pagination(headers, skip, expected_len):
+    for i in range(12):
+        create_done_todo(headers, f"完了済み{i}")
+    for i in range(3):
+        create_todo(headers, f"未完了{i}")
+
+    response = get_todos(headers, f"?done=true&skip={skip}&limit=10")
+
+    assert response.status_code == 200
     data = response.json()
-
-    assert [todo["id"] for todo in data] == sorted([todo1_id, todo2_id])
-
-
-# ====================
-# sort_by制限テスト
-# ====================
-
-def test_get_todos_invalid_sort_by():
-    token = get_token()
-
-    response = client.get(
-        "/todos?sort_by=invalid",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 422
+    assert len(data) == expected_len
+    assert all(t["done"] is True for t in data)
 
 
-# ====================
-# Todo更新テスト
-# ====================
+@pytest.mark.parametrize("skip, expected_len", [(0, 10), (10, 2)], ids=["first_page", "last_page"])
+def test_priority_filter_with_pagination(headers, skip, expected_len):
+    for i in range(12):
+        create_todo(headers, f"優先度2の{i}", priority=2)
+    for i in range(3):
+        create_todo(headers, f"優先度1の{i}", priority=1)
 
-def test_update_todo():
-
-    token = get_token()
-
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "更新テスト"
-        },
-        headers=auth_header(token)
-    )
-
-    todo_id = response.json()["id"]
-
-
-    response = client.patch(
-        f"/todos/{todo_id}?done=true",
-        headers=auth_header(token)
-    )
+    response = get_todos(headers, f"?priority=2&skip={skip}&limit=10")
 
     assert response.status_code == 200
-
-
     data = response.json()
-
-    assert data["done"] is True
+    assert len(data) == expected_len
+    assert all(t["priority"] == 2 for t in data)
 
 
 # ====================
-# Todoを未完了に戻すテスト
+# Todo更新
 # ====================
 
-def test_update_todo_to_false():
+def test_update_todo(headers):
+    todo = create_todo(headers, "更新テスト")
 
-    token = get_token()
-
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "未完了に戻すテスト"
-        },
-        headers=auth_header(token)
-    )
-
-    todo_id = response.json()["id"]
-
-
-    client.patch(
-        f"/todos/{todo_id}?done=true",
-        headers=auth_header(token)
-    )
-
-
-    response = client.patch(
-        f"/todos/{todo_id}?done=false",
-        headers=auth_header(token)
-    )
+    response = set_done(headers, todo["id"], True)
 
     assert response.status_code == 200
+    assert response.json()["done"] is True
 
+
+def test_update_todo_to_false(headers):
+    todo = create_done_todo(headers, "未完了に戻すテスト")
+
+    response = set_done(headers, todo["id"], False)
+
+    assert response.status_code == 200
     assert response.json()["done"] is False
 
 
+def test_update_todo_not_found(headers):
+    assert set_done(headers, 999999999, True).status_code == 404
+
+
 # ====================
-# Todo削除テスト
+# Todo削除
 # ====================
 
-def test_delete_todo():
+def test_delete_todo(headers):
+    todo = create_todo(headers, "削除テスト")
 
-    token = get_token()
-
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "削除テスト"
-        },
-        headers=auth_header(token)
-    )
-
-    todo_id = response.json()["id"]
-
-
-    response = client.delete(
-        f"/todos/{todo_id}",
-        headers=auth_header(token)
-    )
+    response = client.delete(f"/todos/{todo['id']}", headers=headers)
 
     assert response.status_code == 204
 
 
-# ====================
-# 削除後に存在しないことを確認
-# ====================
+def test_deleted_todo_is_not_found(headers):
+    todo = create_todo(headers, "削除確認テスト")
 
-def test_delete_todo_and_check_not_found():
-
-    token = get_token()
+    assert client.delete(f"/todos/{todo['id']}", headers=headers).status_code == 204
+    assert set_done(headers, todo["id"], True).status_code == 404
 
 
-    response = client.post(
-        "/todos",
-        json={
-            "task": "削除確認テスト"
-        },
-        headers=auth_header(token)
-    )
-
-    todo_id = response.json()["id"]
-
-
-    delete_response = client.delete(
-        f"/todos/{todo_id}",
-        headers=auth_header(token)
-    )
-
-    assert delete_response.status_code == 204
-
-
-    update_response = client.patch(
-        f"/todos/{todo_id}?done=true",
-        headers=auth_header(token)
-    )
-
-    assert update_response.status_code == 404
+def test_delete_todo_not_found(headers):
+    assert client.delete("/todos/999999999", headers=headers).status_code == 404
 
 
 # ====================
-# 存在しないTodo更新
+# 他ユーザーとの分離
 # ====================
 
-def test_not_found():
+def test_cannot_update_other_users_todo(headers, other_headers):
+    todo = create_todo(headers, "ユーザー1のTodo")
 
-    token = get_token()
-
-
-    response = client.patch(
-        "/todos/999999999?done=true",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 404
+    assert set_done(other_headers, todo["id"], True).status_code == 404
 
 
-# ====================
-# 他ユーザーのTodoを更新できない
-# ====================
+def test_cannot_delete_other_users_todo(headers, other_headers):
+    todo = create_todo(headers, "ユーザー1のTodo")
 
-def test_cannot_update_other_users_todo():
-
-    token1 = get_token()
-    token2 = get_token()
+    assert client.delete(f"/todos/{todo['id']}", headers=other_headers).status_code == 404
 
 
-    response = client.post(
-        "/todos",
-        json={
-            "task": "ユーザー1のTodo"
-        },
-        headers=auth_header(token1)
-    )
+def test_cannot_get_other_users_todos(headers, other_headers):
+    create_todo(headers, "ユーザー1だけのTodo")
+    create_todo(other_headers, "ユーザー2だけのTodo")
 
-    todo_id = response.json()["id"]
-
-
-    response = client.patch(
-        f"/todos/{todo_id}?done=true",
-        headers=auth_header(token2)
-    )
-
-    assert response.status_code == 404
-
-
-# ====================
-# 他ユーザーのTodoを削除できない
-# ====================
-
-def test_cannot_delete_other_users_todo():
-
-    token1 = get_token()
-    token2 = get_token()
-
-
-    response = client.post(
-        "/todos",
-        json={
-            "task": "ユーザー1のTodo"
-        },
-        headers=auth_header(token1)
-    )
-
-    todo_id = response.json()["id"]
-
-
-    response = client.delete(
-        f"/todos/{todo_id}",
-        headers=auth_header(token2)
-    )
-
-    assert response.status_code == 404
-
-
-# ====================
-# 他ユーザーのTodoが取得結果に出ない
-# ====================
-
-def test_cannot_get_other_users_todos():
-
-    token1 = get_token()
-    token2 = get_token()
-
-
-    client.post(
-        "/todos",
-        json={
-            "task": "ユーザー1だけのTodo"
-        },
-        headers=auth_header(token1)
-    )
-
-    client.post(
-        "/todos",
-        json={
-            "task": "ユーザー2だけのTodo"
-        },
-        headers=auth_header(token2)
-    )
-
-    response = client.get(
-        "/todos",
-        headers=auth_header(token2)
-    )
+    response = get_todos(other_headers)
 
     assert response.status_code == 200
-
-
-    data = response.json()
-
-    assert any(
-        todo["task"] == "ユーザー2だけのTodo"
-        for todo in data
-    )
-
-    assert all(
-        todo["task"] != "ユーザー1だけのTodo"
-        for todo in data
-    )
-
-
-# ====================
-# ページネーションテスト
-# ====================
-
-def test_pagination():
-
-    token = get_token()
-
-
-    for i in range(15):
-
-        response = client.post(
-            "/todos",
-            json={
-                "task": f"task{i}"
-            },
-            headers=auth_header(token)
-        )
-
-        assert response.status_code == 201
-
-
-    # 1ページ目
-    response = client.get(
-        "/todos?skip=0&limit=10",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 200
-
-    assert len(response.json()) == 10
-
-
-    # 2ページ目
-    response = client.get(
-        "/todos?skip=10&limit=10",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 200
-
-    assert len(response.json()) == 5
-
-
-# ====================
-# ページネーション空ページ
-# ====================
-
-def test_pagination_empty_page():
-
-    token = get_token()
-
-
-    for i in range(10):
-
-        response = client.post(
-            "/todos",
-            json={
-                "task": f"pagination{i}"
-            },
-            headers=auth_header(token)
-        )
-
-        assert response.status_code == 201
-
-
-    response = client.get(
-        "/todos?skip=10&limit=10",
-        headers=auth_header(token)
-    )
-
-    assert response.status_code == 200
-
-    assert response.json() == []
-
-
-# ====================
-# 完了済みフィルターとページネーションの組み合わせテスト
-# ====================
-
-
-def test_done_filter_with_pagination():
-    token = get_token()
-    headers = auth_header(token)
-
-    
-    for i in range(12):
-        create_response = client.post(
-            "/todos",
-            json={"task": f"完了済みTodo{i}"},
-            headers=headers,
-        )
-        assert create_response.status_code == 201
-
-        todo_id = create_response.json()["id"]
-
-        update_response = client.patch(
-            f"/todos/{todo_id}?done=true",
-            headers=headers,
-        )
-        assert update_response.status_code == 200
-
-    
-    for i in range(3):
-        response = client.post(
-            "/todos",
-            json={"task": f"未完了Todo{i}"},
-            headers=headers,
-        )
-        assert response.status_code == 201
-
-    
-    page1 = client.get(
-        "/todos?done=true&skip=0&limit=10",
-        headers=headers,
-    )
-    assert page1.status_code == 200
-    page1_data = page1.json()
-    assert len(page1_data) == 10
-    assert all(todo["done"] is True for todo in page1_data)
-
-    
-    page2 = client.get(
-        "/todos?done=true&skip=10&limit=10",
-        headers=headers,
-    )
-    assert page2.status_code == 200
-    page2_data = page2.json()
-    assert len(page2_data) == 2
-    assert all(todo["done"] is True for todo in page2_data)
-
-
-# ====================
-# 優先度フィルターとページネーションの組み合わせテスト
-# ====================
-
-def test_priority_filter_with_pagination():
-    token = get_token()
-    headers = auth_header(token)
-
-    
-    for i in range(12):
-        response = client.post(
-            "/todos",
-            json={
-                "task": f"優先度2のTodo{i}",
-                "priority": 2,
-            },
-            headers=headers,
-        )
-        assert response.status_code == 201
-
-    
-    for i in range(3):
-        response = client.post(
-            "/todos",
-            json={
-                "task": f"優先度1のTodo{i}",
-                "priority": 1,
-            },
-            headers=headers,
-        )
-        assert response.status_code == 201
-
-    
-    page1 = client.get(
-        "/todos?priority=2&skip=0&limit=10",
-        headers=headers,
-    )
-    assert page1.status_code == 200
-
-    page1_data = page1.json()
-    assert len(page1_data) == 10
-    assert all(todo["priority"] == 2 for todo in page1_data)
-
-    
-    page2 = client.get(
-        "/todos?priority=2&skip=10&limit=10",
-        headers=headers,
-    )
-    assert page2.status_code == 200
-
-    page2_data = page2.json()
-    assert len(page2_data) == 2
-    assert all(todo["priority"] == 2 for todo in page2_data)
+    assert [t["task"] for t in response.json()] == ["ユーザー2だけのTodo"]

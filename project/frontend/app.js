@@ -1,111 +1,162 @@
 // ====================
-// JWTトークン
+// 設定・状態
 // ====================
 
-let token = localStorage.getItem("token") || "";
+const PAGE_SIZE = 10;
+const TOKEN_KEY = "token";
 
-
-// ====================
-// ページネーション
-// ====================
-
+let token = localStorage.getItem(TOKEN_KEY) || "";
 let currentPage = 1;
 
-const limit = 10;
-
 
 // ====================
-// 新規登録
+// ヘルパー
 // ====================
 
-async function register() {
-
-    const username =
-        document.getElementById("register-username").value;
-
-    const password =
-        document.getElementById("register-password").value;
+const $ = (id) => document.getElementById(id);
 
 
-    const res = await fetch("/register", {
+// FastAPIの detail は文字列のことも、422のときは配列のこともある
+function formatError(detail, fallback) {
+    if (typeof detail === "string") {
+        return detail;
+    }
 
-        method: "POST",
+    if (Array.isArray(detail)) {
+        return detail.map((e) => e.msg).join("\n");
+    }
 
-        headers: {
-            "Content-Type": "application/json"
-        },
+    return fallback;
+}
 
-        body: JSON.stringify({
-            username,
-            password
-        })
+
+// サーバーは日時をタイムゾーンなし(UTC)で返すので、UTCとして解釈する
+function parseServerDate(value) {
+    const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(value);
+
+    return new Date(hasTimezone ? value : value + "Z");
+}
+
+
+async function apiFetch(path, { method = "GET", body, auth = true } = {}) {
+    const headers = {};
+
+    if (body !== undefined) {
+        headers["Content-Type"] = "application/json";
+    }
+
+    if (auth) {
+        headers["Authorization"] = "Bearer " + token;
+    }
+
+    const res = await fetch(path, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
     });
 
-
-    const data = await res.json();
-
-
-    if (res.ok) {
-
-        alert("登録成功");
-
-    } else {
-
-        alert(data.detail);
-
+    // 204 などボディがない場合に備える
+    let data = null;
+    try {
+        data = await res.json();
+    } catch {
+        data = null;
     }
+
+    // トークン切れ → ログアウト扱いにする
+    if (auth && res.status === 401) {
+        clearSession();
+        alert("ログインの有効期限が切れました。もう一度ログインしてください");
+    }
+
+    return { ok: res.ok, status: res.status, data };
+}
+
+
+function requireLogin() {
+    if (!token) {
+        alert("ログインしてください");
+        return false;
+    }
+
+    return true;
+}
+
+
+function setToken(newToken) {
+    token = newToken;
+    localStorage.setItem(TOKEN_KEY, newToken);
+    updateAuthUi();
+}
+
+
+function clearSession() {
+    token = "";
+    localStorage.removeItem(TOKEN_KEY);
+    currentPage = 1;
+    $("todo-list").innerHTML = "";
+    updateAuthUi();
+}
+
+
+function updateAuthUi() {
+    $("logout-button").hidden = !token;
 }
 
 
 // ====================
-// ログイン
+// 新規登録・ログイン・ログアウト
 // ====================
 
-async function login() {
+async function register() {
+    const username = $("register-username").value;
+    const password = $("register-password").value;
 
-    const username =
-        document.getElementById("username").value;
-
-    const password =
-        document.getElementById("password").value;
-
-
-    const res = await fetch("/login", {
-
+    const { ok, data } = await apiFetch("/register", {
         method: "POST",
-
-        headers: {
-            "Content-Type": "application/json"
-        },
-
-        body: JSON.stringify({
-            username,
-            password
-        })
+        body: { username, password },
+        auth: false,
     });
 
-
-    const data = await res.json();
-
-
-    if (!res.ok) {
-
-        alert(data.detail);
-
+    if (!ok) {
+        alert(formatError(data?.detail, "登録に失敗しました"));
         return;
     }
 
+    $("register-username").value = "";
+    $("register-password").value = "";
 
-    token = data.access_token;
+    alert("登録成功");
+}
 
-    localStorage.setItem("token", data.access_token);
 
+async function login() {
+    const username = $("username").value;
+    const password = $("password").value;
+
+    const { ok, data } = await apiFetch("/login", {
+        method: "POST",
+        body: { username, password },
+        auth: false,
+    });
+
+    if (!ok) {
+        alert(formatError(data?.detail, "ログインに失敗しました"));
+        return;
+    }
+
+    setToken(data.access_token);
+    $("password").value = "";
 
     alert("ログイン成功");
 
     currentPage = 1;
-
     getTodos();
+}
+
+
+function logout() {
+    clearSession();
 }
 
 
@@ -114,427 +165,208 @@ async function login() {
 // ====================
 
 async function addTodo() {
-
-    if (!token) {
-
-        alert("ログインしてください");
-
+    if (!requireLogin()) {
         return;
     }
 
-    const task =
-        document.getElementById("task").value;
+    const task = $("task").value;
+    const dueDate = $("due-date").value;
+    const priority = $("priority").value;
 
-    const dueDate =
-        document.getElementById("due-date").value;
-
-    const priority =
-        document.getElementById("priority").value;
-
-
-    const todoData = {
-
-        task: task,
-
-        due_date: dueDate
-            ? new Date(dueDate).toISOString()
-            : null,
-
-        priority: priority
-            ? Number(priority)
-            : 1
-    };
-
-
-    const res = await fetch("/todos", {
-
+    const { ok, data } = await apiFetch("/todos", {
         method: "POST",
-
-        headers: {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer " + token
+        body: {
+            task,
+            due_date: dueDate ? new Date(dueDate).toISOString() : null,
+            priority: priority ? Number(priority) : 1,
         },
-
-        body: JSON.stringify(todoData)
     });
 
-
-    const data = await res.json();
-
-
-    if (!res.ok) {
-
-        alert(data.detail || "Todoの追加に失敗しました");
-
+    if (!ok) {
+        // 401は apiFetch 側で通知済み
+        if (token) {
+            alert(formatError(data?.detail, "Todoの追加に失敗しました"));
+        }
         return;
     }
-
 
     alert("Todoを追加しました");
 
-
-    document.getElementById("task").value = "";
-    document.getElementById("due-date").value = "";
-    document.getElementById("priority").value = "";
+    $("task").value = "";
+    $("due-date").value = "";
+    $("priority").value = "";
 
     currentPage = 1;
-
     getTodos();
 }
 
 
 // ====================
-// Todo一覧取得
+// Todo一覧
 // ====================
 
-function resetPageAndGetTodos(){
-
+function resetPageAndGetTodos() {
     currentPage = 1;
-    
     getTodos();
 }
 
-async function getTodos() {
 
-    if (!token) {
-
-        alert("ログインしてください");
-
-        return;
-    }
-
-
-    const done =
-        document.getElementById("done-filter").value;
-
-    const priority =
-        document.getElementById("priority-filter").value;
-
-    const sortBy =
-        document.getElementById("sort-by").value;
-
-    
-    // ====================
-    // skipを計算
-    // ====================
-
-    const skip = (currentPage - 1) * limit;
-
-
-    // ====================
-    // URLパラメータを作る
-    // ====================
-
+function buildTodoQuery() {
     const params = new URLSearchParams();
 
+    const done = $("done-filter").value;
+    const priority = $("priority-filter").value;
+    const sortBy = $("sort-by").value;
 
     if (done !== "") {
-
         params.append("done", done);
     }
 
-
     if (priority !== "") {
-
         params.append("priority", priority);
     }
 
-
     if (sortBy !== "") {
-
         params.append("sort_by", sortBy);
     }
 
+    params.append("skip", (currentPage - 1) * PAGE_SIZE);
 
-    params.append("skip", skip);
+    // 次のページがあるか判定するため、表示件数より1件多く取得する
+    params.append("limit", PAGE_SIZE + 1);
 
-    // 次のページが存在するか確認するため
-    // 表示件数より1件多く取得する
-
-    params.append("limit", limit + 1);
-
-
-    const query =
-        params.toString();
+    return params.toString();
+}
 
 
-    const url = "/todos?" + query;
+function createTodoItem(todo) {
+    const li = document.createElement("li");
+
+    // Todo情報
+    const taskText = document.createElement("span");
+    taskText.innerText = `${todo.task} / done: ${todo.done} / priority: ${todo.priority}`;
+    li.appendChild(taskText);
+
+    // 期限
+    if (todo.due_date) {
+        const dueText = document.createElement("span");
+        dueText.innerText = " / due: " + parseServerDate(todo.due_date).toLocaleString();
+        li.appendChild(dueText);
+    }
+
+    // 完了・未完了ボタン
+    const updateButton = document.createElement("button");
+    updateButton.innerText = todo.done ? "未完了に戻す" : "完了にする";
+    updateButton.onclick = () => updateTodo(todo.id, !todo.done);
+    li.appendChild(updateButton);
+
+    // 削除ボタン
+    const deleteButton = document.createElement("button");
+    deleteButton.innerText = "削除";
+    deleteButton.onclick = () => deleteTodo(todo.id);
+    li.appendChild(deleteButton);
+
+    return li;
+}
 
 
-    const res = await fetch(url, {
-
-        headers: {
-            "Authorization": "Bearer " + token
-        }
-    });
-
-
-    const data = await res.json();
-
-
-    if (!res.ok) {
-
-        alert(data.detail || "Todoの取得に失敗しました");
-
+async function getTodos() {
+    if (!requireLogin()) {
         return;
     }
 
+    const { ok, data } = await apiFetch("/todos?" + buildTodoQuery());
 
-    // ====================
-    // 次のページがあるか確認
-    // ====================
-
-    const hasNextPage = data.length > limit;
-
-
-    // 画面に表示するのは最大10件
-    
-    const todosToDisplay = data.slice(0, limit);
-
-
-    // ====================
-    // Todo一覧を表示
-    // ====================
-
-    const list =
-        document.getElementById("todo-list");
-
-
-    list.innerHTML = "";
-
-
-    todosToDisplay.forEach(todo => {
-
-        const li =
-            document.createElement("li");
-
-
-        // ====================
-        // Todo情報
-        // ====================
-
-        const taskText =
-            document.createElement("span");
-
-
-        taskText.innerText =
-            todo.task
-            + " / done: "
-            + todo.done
-            + " / priority: "
-            + todo.priority;
-
-
-        li.appendChild(taskText);
-
-
-        // ====================
-        // 期限表示
-        // ====================
-
-        if (todo.due_date) {
-
-            const dueText =
-                document.createElement("span");
-
-
-            const date =
-                new Date(todo.due_date);
-
-
-            dueText.innerText =
-                " / due: "
-                + date.toLocaleString();
-
-
-            li.appendChild(dueText);
+    if (!ok) {
+        if (token) {
+            alert(formatError(data?.detail, "Todoの取得に失敗しました"));
         }
+        return;
+    }
 
+    // 最後のページの最後の1件を消した場合などは、ひとつ前のページに戻る
+    if (data.length === 0 && currentPage > 1) {
+        currentPage--;
+        getTodos();
+        return;
+    }
 
-        // ====================
-        // 完了・未完了ボタン
-        // ====================
+    const hasNextPage = data.length > PAGE_SIZE;
+    const todosToDisplay = data.slice(0, PAGE_SIZE);
 
-        const updateButton =
-            document.createElement("button");
+    const list = $("todo-list");
+    list.innerHTML = "";
+    todosToDisplay.forEach((todo) => list.appendChild(createTodoItem(todo)));
 
-
-        updateButton.innerText =
-            todo.done
-                ? "未完了に戻す"
-                : "完了にする";
-
-
-        updateButton.onclick =
-            function () {
-
-                updateTodo(
-                    todo.id,
-                    !todo.done
-                );
-
-            };
-
-
-        li.appendChild(updateButton);
-
-
-        // ====================
-        // 削除ボタン
-        // ====================
-
-        const deleteButton =
-            document.createElement("button");
-
-
-        deleteButton.innerText =
-            "削除";
-
-
-        deleteButton.onclick =
-            function () {
-
-                deleteTodo(todo.id);
-
-            };
-
-
-        li.appendChild(deleteButton);
-
-
-        // ====================
-        // Todoを画面に追加
-        // ====================
-
-        list.appendChild(li);
-
-    });
-
-
-    // ====================
-    // ページ番号を表示
-    // ====================
-
-    document.getElementById("page-number").innerText =
-        currentPage;
-
-
-    // ====================
-    // 次のページボタン
-    // ====================
-
-    const nextButton =
-        document.querySelector(
-            'button[onclick="nextPage()"]'
-        );
-
-    
-    nextButton.disabled = !hasNextPage;
-
-
-    // ====================
-    // 前のページボタン
-    // ====================
-
-    const previousButton =
-        document.querySelector(
-            'button[onclick="previousPage()"]'
-        );
-
-
-    previousButton.disabled = currentPage === 1;
+    $("page-number").innerText = currentPage;
+    $("next-button").disabled = !hasNextPage;
+    $("prev-button").disabled = currentPage === 1;
 }
 
 
 // ====================
-// 次のページ
+// ページ移動
 // ====================
 
 function nextPage() {
-
     currentPage++;
-
     getTodos();
 }
 
 
-// ====================
-// 前のページ
-// ====================
-
 function previousPage() {
-
     if (currentPage === 1) {
-
         return;
     }
 
-
     currentPage--;
-
     getTodos();
 }
 
 
 // ====================
-// Todo更新
+// Todo更新・削除
 // ====================
 
 async function updateTodo(todoId, done) {
+    const { ok, data } = await apiFetch(`/todos/${todoId}?done=${done}`, {
+        method: "PATCH",
+    });
 
-    const res = await fetch(
-        "/todos/" + todoId + "?done=" + done,
-        {
-            method: "PATCH",
-
-            headers: {
-                "Authorization": "Bearer " + token
-            }
+    if (!ok) {
+        if (token) {
+            alert(formatError(data?.detail, "Todoの更新に失敗しました"));
         }
-    );
-
-    
-    if (!res.ok) {
-        
-        const data = await res.json();
-
-        alert(data.detail || "Todoの更新に失敗しました");
-
         return;
     }
 
+    getTodos();
+}
+
+
+async function deleteTodo(todoId) {
+    const { ok, data } = await apiFetch(`/todos/${todoId}`, {
+        method: "DELETE",
+    });
+
+    if (!ok) {
+        if (token) {
+            alert(formatError(data?.detail, "Todoの削除に失敗しました"));
+        }
+        return;
+    }
 
     getTodos();
 }
 
 
 // ====================
-// Todo削除
+// 初期表示
 // ====================
 
-async function deleteTodo(todoId) {
+updateAuthUi();
 
-    const res = await fetch(
-        "/todos/" + todoId,
-        {
-            method: "DELETE",
-
-            headers: {
-                "Authorization": "Bearer " + token
-            }
-        }
-    );
-
-    
-    if (!res.ok) {
-        
-        const data = await res.json();
-        
-        alert(data.detail || "Todoの削除に失敗しました");
-        
-        return;
-    }
-    
-    
+// ログイン済み（トークンが残っている）ならそのまま一覧を表示
+if (token) {
     getTodos();
 }
