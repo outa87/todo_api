@@ -1,5 +1,17 @@
-.env
-*.db
+# Python
 __pycache__/
-venv/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
 .venv/
+venv/
+
+# Environment variables
+.env
+
+# Database
+*.db
+
+# Editor
+.vscode/
